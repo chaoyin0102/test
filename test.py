@@ -3,7 +3,7 @@ import json
 import mysql.connector
 
 # open JSON file
-json_data = open("/Users/chaoyin/Desktop//Respository/taipei-day-trip//data/taipei-attractions.json").read()
+json_data = open("/data/taipei-attractions.json").read()
 raw_data = json.loads(json_data)
 data = raw_data["result"]["results"]
 
