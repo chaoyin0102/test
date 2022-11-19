@@ -1,64 +1,208 @@
-#coding=utf-8
-import json
-import mysql.connector
+from flask import *
+from mysql.connector import pooling
 
-# open JSON file
-json_data = open("/data/taipei-attractions.json").read()
-raw_data = json.loads(json_data)
-data = raw_data["result"]["results"]
+app=Flask(__name__)
+app.config["JSON_AS_ASCII"]=False
+app.config["TEMPLATES_AUTO_RELOAD"]=True
 
-# make the connection with mysql
-trip_db = mysql.connector.connect(
-    host = "localhost",
-    user = "root",
-    password = "**********",
-    database = "new_db"
+# connect with database by pooling
+connection_pool = pooling.MySQLConnectionPool(
+    pool_name="connection_pool",
+    pool_size=5,
+    pool_reset_session=True,
+    host="localhost",
+    user="root",
+    password="******",
+    database="new_db"
 )
-cursor = trip_db.cursor()
 
-# filter images
-def filter_image(arr):
-    new_images = []
-    for i in range(len(arr)):
-        if arr[i][-3:] == "jpg" or "JPG" or "png" or "PNG":
-            new_images.append(arr[i])
+# Pages
+@app.route("/")
+def index():
+	return render_template("index.html")
+@app.route("/attraction/<id>")
+def attraction(id):
+	return render_template("attraction.html")
+
+# API of attraction
+# 1-2-1
+@app.route("/api/attractions")
+def attractions():
+    try:
+        connection_object = connection_pool.get_connection()
+        cursor = connection_object.cursor(dictionary=True)
+
+        page = request.args.get("page", type=int)
+        keyword = request.args.get("keyword")
+
+        # keyword
+        if keyword:
+            cursor.execute(
+                f'SELECT * FROM `attractions2` WHERE `category` LIKE "{keyword}" or `name` LIKE "%{keyword}%"'
+            )
+            count = cursor.fetchall()
+            if len(count) == 0:
+                return jsonify({
+                    "error" : True,
+                    "message" : "查無相關景點",  
+                })
+            
+            else:
+                if len(count) - page * 12 > 12:
+                    nextPage = page +1
+                else:
+                    nextPage = None
+
+                dataList = []
+                for i in range(len(count) - page*12):
+                    dataList.append({"id": count[i]["id"],
+                                    "name": count[i]["name"],
+                                     "category": count[i]["category"],
+                                     "description": count[i]["description"],
+                                     "address": count[i]["address"],
+                                     "transport": count[i]["transport"],
+                                     "mrt": count[i]["mrt"],
+                                     "lat": count[i]["lat"],
+                                     "lng": count[i]["lng"],
+                                     "images": count[i]["images"].split(",")
+                                     })
+                    
+                cursor.close()
+                connection_object.close()
+
+            return jsonify({
+                    "nextPage": nextPage,
+                    "data": dataList
+                })
+
+        # without keyword
+        else:        
+            cursor.execute(
+                f'SELECT * FROM attractions2 LIMIT {page*12}, 13'
+            )
+            items = cursor.fetchall()
+
+            if len(items) == 0:
+                return jsonify({
+                    "error": True,
+                    "message": "查無相關景點"
+                })
+
+            else:
+                if len(items) == 13:
+                    nextPage = page + 1
+                    items = items[:-1]
+                else:
+                    nextPage = None
+
+            itemList = []
+            for j in range(len(items)):
+                itemList.append({
+                    "id": items[j]["id"],
+                    "name": items[j]["name"],
+                    "category": items[j]["category"],
+                    "description": items[j]["description"],
+                    "address": items[j]["address"],
+                    "transport": items[j]["transport"],
+                    "mrt": items[j]["mrt"],
+                    "lat": items[j]["lat"],
+                    "lng": items[j]["lng"],
+                    "images": items[j]["images"].split(",")
+                }),
+            
+            return jsonify({
+                "nextPage": nextPage,
+                "data":itemList
+            })
+    except 500:
+        return jsonify({
+            "error": True,
+            "message": "伺服器內部錯誤"
+        }), 500
+    finally:
+        cursor.close()
+        connection_object.close()
+
+
+# 1-2-2
+@app.route("/api/attraction/<attractionId>")
+def attractionId(attractionId):
+    try:
+        connection_object = connection_pool.get_connection()
+        cursor = connection_object.cursor(dictionary = True)
+
+        cursor.execute(
+            "SELECT * FROM `attractions2` WHERE `id` = %s" % attractionId
+        )
+        data = cursor.fetchone()
+
+
+        # 景點編號輸入正確
+        if data !=None:
+            # data= json.loads(data)
+            return jsonify({
+                "data": {
+                    "id": data["id"],
+                    "name": data["name"],
+                    "category": data["category"],
+                    "description": data["description"],
+                    "address": data["address"],
+                    "transport": data["transport"],
+                    "mrt": data["mrt"],
+                    "lat": data["lat"],
+                    "lng": data["lng"],
+                    "images": data["images"].split(",")
+                }
+            })
         else:
-            continue
-    return new_images
+            return jsonify({
+                 "error" : True,
+                 "message" : "景點編號不正確"
+            }), 400
 
-# get attraction
-for attr in data:
-    id = attr["_id"]
-    name = attr["name"]
-    category = attr["CAT"]
-    transport = attr["direction"]
-    description = attr["description"]
-    address = attr["address"]
-    mrt = attr["MRT"]
-    latitude = attr["latitude"]
-    longitude = attr["longitude"]
-    images = attr["file"].split("https")
+    except 500:
+        return jsonify({
+            "error": True,
+            "message": "伺服器內部錯誤"
+        }), 500
 
-    # 把 https 加回圖片
-    images = ["https" + i for i in images][1:]
-    new_image = "".join(filter_image(images))
+    finally:
+        cursor.close()
+        connection_object.close()
 
-    # insert data into mysql
-    cursor.execute("INSERT INTO attactions (id, name, catagory, transport, description, address, mrt, latitude, longitude, images) VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", (id,name,category,description,address[0],transport[0],mrt[0],float(latitude[0]),float(longitude[0]), new_image))
-        
-trip_db.commit()
-trip_db.close()
-    
+# 1-2-3
+@app.route("/api/categories")
+def categories():
+    try:
+        connection_object = connection_pool.get_connection()
+        cursor = connection_object.cursor(dictionary=True)
 
+        cursor.execute("SELECT DISTINCT `category` FROM `attractions`")
+        categories = cursor.fetchall()
+        print(categories)
 
-# _id ID
-# name 景點名稱
-# direction 交通方式
-# description 景點描述
-# CAT 分類
-# date 日期
-# address 地址
-# file 圖片
-# MRT 捷運站
-# latitude 緯度
-# longitude 經度
+        categoriesList = []
+        for data in categories:
+            categoriesList.append(data["category"])
+
+        return jsonify({"data": categoriesList})
+
+    except 500:
+        return jsonify({
+            "error": True,
+            "message": "伺服器內部錯誤"
+        }), 500
+
+    finally:
+        cursor.close()
+        connection_object.close()
+
+@app.route("/booking")
+def booking():
+	return render_template("booking.html")
+@app.route("/thankyou")
+def thankyou():
+	return render_template("thankyou.html")
+
+if __name__ == "__main__":
+	app.run(port=3000, debug=True)
